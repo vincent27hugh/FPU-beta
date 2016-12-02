@@ -1,0 +1,455 @@
+module system  !!!全局变量
+    implicit none
+    real(kind=8),parameter::t_to=1d5 !!!t_to表示计算总时间，可修改,默认大于Nt_ca*h！！！
+    integer,parameter::Nt_ca=100  !!!计算时间，让系统自行传播一段时间，计算时间为Nt_ca*h。可修改！！
+    integer(kind=4),parameter::Nt_co=101  !!!关联时间!!!!!!!! 
+    integer,parameter::dt=10  !!!保存时间!!!保存相邻两次计算结果的时间相差dt*h可修改！！！
+    integer(kind=4),parameter::N=301   !!!FPU-β链长，可修改！！！
+    real(kind=8),parameter::h=0.1d0  !!!计算时间间隔，可修改！！！
+    real(kind=8),parameter::Ham_den=1.0d0*N  !!!能量密度！！！
+end module
+
+    program simplified 
+    use system 
+    implicit none
+    real(kind=8)::t,t_2 
+    real(kind=8)::TEMP !!!系统温度！！！TEMPERATURE
+    real(kind=8)::q(N) !!!位移量
+    real(kind=8)::p(N)  !!!动量
+    real(kind=8)::F_V(N) !!!与系统势能相关的导函数
+    real(kind=8)::H_e(N) !!!i位置的哈密顿量 !!! 每执行一次产生一个新的q，p值，对应的哈密顿量用Ham（N）来表示N个粒子的能量。
+    real(kind=8)::Tp_T(N)=0d0  !!!温度T=<p^2>的临时值
+    real(kind=8)::TPR(N)=0d0   !!!各粒子温度
+    
+    real(kind=8)::Tp_H(N)=0d0  !!!i位置哈密顿量<Hi(t)>临时值
+    real(kind=8)::TP_MH(NT_CO,N) !!!(k+1)/2位置哈密顿量<Hk(0)>临时值
+    real(kind=8)::TP_MH2(NT_CO,N) !!!(k+1)/2位置<Hk(0)^2>临时值
+    real(kind=8)::TP_MP2(NT_CO,N) !!!(k+1)/2位置<Pk(0)^2>临时值
+    real(kind=8)::M_H(NT_CO,N)=0d0 !!（k+1）/2位置的动态能量数组
+    real(kind=8)::M_P(NT_CO,N)=0d0
+    real(kind=8)::TPCE(NT_CO,N) !!!
+    real(kind=8)::TPCP(NT_CO,N)
+    real(kind=8)::ts(NT_CO,N) !!!计数
+    
+    real(kind=8),allocatable::TP_HH(:,:,:) !!!<Hi(t)Hk(0)>
+    real(kind=8),allocatable::TP_PP(:,:,:) !!!<Pi(t)Pk(0)>
+    real(kind=8)::C_E(N,NT_CO,N) !!!能量相关函数
+    real(kind=8)::C_P(N,NT_CO,N)
+    real(kind=8)::Ham_to  !!!系统总哈密顿量
+    real(kind=8)::r2t(NT_CO)=0d0 !!!暂存r(t)^2
+    integer i !!!1到N
+    integer j !!!1到Nt_co
+    integer k !!!1到N,中心位置移动
+    integer l
+    integer r !!!i-k
+    real(kind=8)::s=0  !!!寻峰
+    integer::s1=0 !!!计数器
+    real(kind=8)::Sum1=0d0  !!!CE
+    real(kind=8)::Sum2=0d0 !!!CP
+    integer::N_tp
+    t=0d0 !!!计算时间
+    t_2=0d0 !!!计数器
+    N_tp=0
+    open(13,file="FPU CP.txt")
+    open(14,file="FPU CE.txt") !!!保存能量关联函数 C_E
+    open(15,file="FPU TEMPERATURE.TXT")
+    open(16,file="FPU velocity.txt")
+    open(21,file="FPU r2(t).txt")
+    call initial(q,p)
+    allocate(TP_HH(N,NT_CO,N))
+    allocate(TP_PP(N,NT_CO,N))
+    do while(t<t_to)
+        t=t+h
+        if(t>Nt_ca*h) then  !!!让系统自行传播一段时间
+            t_2=t_2+h
+            call sympl_4(q,p)
+            if(t_2>=dt*h) then  !!!保存时间
+                call Func_H_e(H_e,q,p)  !!!单个粒子的哈密顿量   
+                do k=1,N
+                    do j=1,Nt_co-1
+                        M_H(j,k)=M_H(j+1,k)  !替换k处的动态数组
+                        M_P(j,k)=M_P(j+1,k)
+                    end do
+                    M_H(NT_co,k)=H_E(k)
+                    M_P(NT_CO,k)=P(k)
+                end do
+                if(N_tp>=Nt_co) then  !!!从有效传播开始算起，Nt_co*N次计算后开始替换数组！！！
+                    do i=1,N
+                        do j=1,Nt_co
+                            do k=1,N
+                                TP_HH(i,j,k)=TP_HH(i,j,k)+H_e(i)*M_H(j,k) !!!(Nt_co-j)时刻k位置与0时刻i位置
+                                TP_PP(i,j,k)=TP_PP(i,j,k)+p(i)*M_P(j,k)  !!!
+                            end do
+                        end do
+                    end do
+                        Tp_T=p*p+Tp_T  !!!温度
+                        Tp_H=Tp_H+H_E !!!i位置哈密顿量 <Hi(t)>
+                        TP_MH=TP_MH+M_H  !!!k位置哈密顿量 <Hk(0)>
+                        TP_MH2=TP_MH2+M_H*M_H  !!!k位置哈密顿量平方 <Hk^2(0)>
+                        TP_MP2=TP_MP2+M_P*M_P
+                        s1=s1+1
+                end if
+                N_tp=N_tp+1
+                t_2=0
+            end if
+        end if
+        
+    end do
+    TP_T=Tp_T/s1
+    TP_HH=TP_HH/s1
+    Tp_H=Tp_H/s1
+    Tp_MH=Tp_MH/s1
+    Tp_MH2=Tp_MH2/s1
+    TP_PP=TP_PP/S1
+    TP_MP2=TP_MP2/S1
+    do k=1,N
+      do i=1,N
+        do j=1,Nt_co
+            C_E(i,j,k)=(TP_HH(i,j,k)-TP_MH(j,k)*TP_H(i))/(TP_MH2(j,k)-TP_MH(j,k)*TP_MH(j,k)) !!!能量相关函数,k为中心，r=i-k,t=(Nt_co-j)*Nt_co*h
+            C_P(i,j,k)=(TP_PP(i,j,k))/(TP_MP2(j,k)) !!!
+        end do
+      end do
+    end do
+    deallocate(TP_HH)
+    deallocate(TP_PP)
+    do i=1,N
+        TEMP=TEMP+TP_T(i)
+    end do
+    TEMP=TEMP/N  !!!系统总温度
+    do i=1,N
+        do j=1,NT_CO
+            do k=1,N
+                sum1=sum1+C_E(i,j,k)
+                SUM2=SUM2+C_P(i,j,k)
+            end do
+        end do
+    end do
+    
+    call sav5(0,TEMP)
+    call sav5(s1,2d0)
+    call sav5(3,SUM1)
+    call sav5(4,sum2)
+    call sav5(N_tp,4d0)
+    do l=(1-N)/2,(N+1)/2
+        do j=1,Nt_co
+            do i=1,N
+                do k=1,N
+                    if(i-k<(1-N)/2) then 
+                        if((i-k+N)==l) then
+                            TPCE(j,l+(1+N)/2)=TPCE(j,l+(1+N)/2)+C_E(i,j,k)
+                            TPCP(j,l+(1+N)/2)=TPCP(j,l+(1+N)/2)+C_P(i,j,k)
+                            ts(j,l+(1+N)/2)=ts(j,l+(1+N)/2)+1
+                        end if
+                    else if(i-k>(N-1)/2) then  
+                        if((i-k-N)==l) then
+                            TPCE(j,l+(1+N)/2)=TPCE(j,l+(1+N)/2)+C_E(i,j,k)
+                            TPCP(j,l+(1+N)/2)=TPCP(j,l+(1+N)/2)+C_P(i,j,k)
+                            ts(j,l+(1+N)/2)=ts(j,l+(1+N)/2)+1
+                        end if
+                    else
+                        if((i-k)==l) then
+                            TPCE(j,l+(1+N)/2)=TPCE(j,l+(1+N)/2)+C_E(i,j,k)
+                            TPCP(j,l+(1+N)/2)=TPCP(j,l+(1+N)/2)+C_P(i,j,k)
+                            ts(j,l+(1+N)/2)=ts(j,l+(1+N)/2)+1
+                        end if
+                    end if
+                end do
+            end do 
+        end do
+    end do
+    do j=1,Nt_co
+        do l=1,N
+            TPCE(j,l)=TPCE(j,l)/ts(j,l) !!!CE最终值
+            TPCP(j,l)=TPCP(j,l)/ts(j,l)
+        end do
+    end do
+    do j=1,Nt_co
+        do l=1,N
+            call Sav4((l-(1+N)/2),(NT_co-j),TPCE(j,l))
+        end do
+    end do
+    do j=1,Nt_co
+        do l=1,N
+            call Sav3((l-(1+N)/2),(NT_co-j),TPCP(j,l))
+        end do
+    end do
+    do j=1,NT_CO
+        do l=(N+1)/2,N
+            if(TPCP(j,l)>s) then
+                s=TPCP(j,l)
+                r=l-(1+N)/2
+            end if
+        end do
+        call Sav6(r,(NT_co+1-j),s)
+        s=0d0
+    end do  !!! 保存CP波峰位置和相应的相关时间
+    do j=1,NT_CO
+        do l=1,N
+            r2t(j)=r2t(j)+TPCE(j,l)*((l-(1+N)/2)**2)
+        end do
+        write(21,"(i4,'  'f16.8)") (NT_CO-j),r2t(j)
+    end do
+    close(21)        
+    
+    close(13)
+    close(14)
+    close(15)
+    close(16)
+    end
+
+        
+        
+    !!!设置初始值的子程序
+    !!!初始值设为高斯分布 只给动量，位移都为零
+    subroutine initial(q,p)
+    use system
+    implicit none
+    real(kind=8)::q(N)
+    real(kind=8)::p(N)
+    real(kind=8)::Ham_to=0d0
+    real(kind=8)::tp_p=0 !!!初始动量平均值
+    real(kind=8)::tp_H
+    real(kind=8)::Gasdev
+    integer::idum=-1
+    integer i
+    do i=1,N
+        p(i)=Gasdev(idum)
+        q(i)=0   !!!严谨一点！！！
+    end do
+    do i=1,N
+        tp_p=tp_p+p(i)
+    end do
+    tp_p=tp_p/N
+    p=p-tp_p  !!!这里是为了保证总动量为零
+    call Func_H_to(q,p,Ham_to)
+    tp_H=Ham_den/Ham_to
+    p=sqrt(tp_H)*p  !!!这里是为了保证能量密度一定
+    end subroutine initial
+    
+    
+    !!!---高斯分布函数
+    real(kind=8) FUNCTION Gasdev(idum)! ! ! ! !! initial! value! idum! <! 0! ,! this! code! is! called! Gasdev! in Numerical Recepies
+    IMPLICIT None
+    INTEGER,Intent(inout)::idum
+    !Returns!a!normally!distributed!deviate!with!zero!mean!and!unit!variance,!using!ran1(idum)!
+    !as!the!source!of!uniform!deviates.!
+    INTEGER iset
+    real(kind=8) fac,gset,rsq,v1,v2
+    real(kind=8) ran1
+    SAVE iset,gset
+    DATA iset/0/
+    if(idum.lt.0) iset=0 !Reinitialize.!
+    if(iset.eq.0) then  ! ! !We!don’t!have!an!extra!deviate!handy,!so!
+        Do
+            v1=2d0*ran1(idum)-1d0  ! !pick! two! uniform! numbers! in! the! square!extending from -1to+1 in each direction!
+            v2=2d0*ran1(idum)-1d0 
+            rsq=v1**2+v2**2 ! !see!if!they!are!in!the!unit!circle,!
+            if(rsq.lt.1d0) exit !and!if!they!are!not,!try!again.!
+        end do 
+        fac=dsqrt(-2d0*dlog(rsq)/rsq)
+        gset=v1*fac
+        Gasdev=v2*fac
+        iset=1
+    else
+        Gasdev=gset
+        iset=0
+    end if
+    return
+    end Function Gasdev
+    
+    !-------随机分布
+    real(kind=8) Function ran1(idum)
+    implicit none
+    integer,intent(inout)::idum
+    integer::IA,IM,IQ,IR,NTAB,NDIV
+    real(kind=8)::AM,EPS,RNMX
+    parameter(IA=16807,IM=2147483647,AM=1./IM,IQ=127773,IR=2836,NTAB=32,NDIV=1+(IM-1)/NTAB,EPS=1.2e-7,RNMX=1.-EPS)
+    integer::j,k,iv(NTAB),iy
+    Save iv,iy
+    DATA iv/NTAB*0/,IY/0/
+    IF(idum.le.0.or.iy.eq.0) then
+        idum=max(-idum,1)
+        do j=NTAB+8,1,-1
+            k=idum/IQ
+            idum=IA*(idum-k*IQ)-IR*k
+            if (idum.lt.0) idum=idum+IM
+            if (j.le.NTAB) iv(j)=idum
+        end do
+        iy=iv(1)
+    end if
+    k=idum/IQ
+    idum=IA*(idum-k*IQ)-IR*k
+    if(idum.lt.0) idum=idum+IM
+    j=1+iy/NDIV
+    iy=iv(j)
+    iv(j)=idum
+    ran1=min(AM*iy,RNMX)
+    end function ran1
+    
+    !!!保存的子程序1--保存各位置的数据
+    subroutine sav1(H_e,t,F_V,q,p)
+    use system
+    implicit none
+    real(kind=8)::H_e(N)
+    real(kind=8)::t
+    real(kind=8)::F_V(N)
+    real(kind=8)::q(N)
+    real(kind=8)::p(N)
+    integer i
+    do i=1,N
+        write(11,"(f12.8,' 'f12.8,'  'f12.8,'  'f12.8,'  'f12.8)") H_e(i),t,F_V(i),q(i),p(i)
+    end do
+    end subroutine sav1
+    
+    !!!保存的子程序2---保存各粒子温度！！！
+    subroutine sav2(i,TPR)  !!!TPR 表示温度（Temperature）
+    use system
+    implicit none
+    real(kind=8)::TPR(N)
+    integer i
+    write(12,"(i4,' 'f15.8)") i,TPR(i)
+    end subroutine sav2
+    
+    
+     !!!保存的子程序3
+    subroutine Sav3(i,s,c) !!!
+    use system
+    implicit none
+    integer::i
+    integer::s
+    real(kind=8)::c
+    write(13,"(i4,'        'i4,'     'f12.8)") i,s,c
+    end subroutine sav3
+    
+    
+    !!!保存程序4~！
+    subroutine Sav4(i,s,c) !!!
+    use system
+    implicit none
+    integer::i
+    integer::s
+    real(kind=8)::c
+    write(14,"(i4,'        'i4,'     'f12.8)") i,s,c
+    end subroutine sav4
+    
+    !!!保存程序5
+    subroutine sav5(i,S)
+    use system
+    implicit none
+    integer i
+    real(kind=8)::S
+    write(15,"(i4,'  'f12.8)") i,S
+    end subroutine sav5
+    
+     !!!保存的子程序6
+    subroutine Sav6(i,s,c) !!!
+    use system
+    implicit none
+    integer::i
+    integer::s
+    real(kind=8)::c
+    write(16,"(i4,'        'i4,'    'f12.8)") i,s,c
+    end subroutine sav6
+    
+    
+    !!!symplectic D_B 算子
+    subroutine D_B(t,q,p)!!!t表示计算间隔
+    use system
+    implicit none
+    real(kind=8)::q(N)
+    real(kind=8)::p(N)
+    real(kind=8)::F_V(N)
+    real(kind=8)::t
+    integer::i
+    call Func_V(F_V,q,p) 
+    do i=1,N
+        q(i)=q(i)
+        p(i)=-F_V(i)*t+p(i)
+    end do
+    end subroutine D_B
+    
+    !!!symplectic D_A算子
+    subroutine D_A(t,q,p)!!!t表示计算间隔
+    use system
+    implicit none
+    real(kind=8)::q(N)
+    real(kind=8)::p(N)
+    real(kind=8)::t
+    real(kind=8)::F_V(N)
+    integer i
+    do i=1,N
+        q(i)=q(i)+p(i)*t
+        p(i)=p(i)
+    end do
+    end subroutine D_A
+    
+    !!!4阶辛算法子程序
+    subroutine sympl_4(q,p)
+    use system
+    implicit none
+    real(kind=8)::q(N)
+    real(kind=8)::p(N)
+    real(kind=8)::c1 
+    real(kind=8)::c2 
+    real(kind=8)::d1 
+    real(kind=8)::d2 
+    c1=1d0/(2d0*(2d0-2d0**(1d0/3d0)))
+    c2=(1d0-2d0**(1d0/3d0))/(2d0*(2d0-2d0**(1d0/3d0)))
+    d1=1d0/(2d0-2d0**(1d0/3d0))
+    d2=(-2d0**(1d0/3d0))/(2d0-2d0**(1d0/3d0))
+    call D_A(c1*h,q,p)
+    call D_B(d1*h,q,p)
+    call D_A(c2*h,q,p)
+    call D_B(d2*h,q,p)
+    call D_A(c2*h,q,p)
+    call D_B(d1*h,q,p)
+    call D_A(c1*h,q,p)
+    end subroutine sympl_4
+    
+    
+    
+    !!!偏V/偏q(i)子函数!!!可修改！！！力！！
+    !!!不同Lattice 此项不同！！！
+    subroutine Func_V(F_V,q,p)
+    use system
+    implicit none
+    real(kind=8)::p(N)
+    real(kind=8)::q(N)
+    real(kind=8)::F_V(N)
+    integer i
+    do i=2,N-1
+        F_V(i)=2*q(i)-q(i-1)-q(i+1)+(q(i)-q(i-1))**3d0-(q(i+1)-q(i))**3d0
+    end do
+    F_V(1)=2*q(1)-q(N)-q(2)+(q(1)-q(N))**3d0-(q(2)-q(1))**3d0  !!!考虑边界条件
+    F_V(N)=2*q(N)-q(N-1)-q(1)+(q(N)-q(N-1))**3d0-(q(1)-q(N))**3d0   !!!考虑边界条件
+    end subroutine Func_V
+    
+    !!!计算i位置哈密顿量的子程序
+    !!!不同Lattice 此项不同！！！
+    subroutine Func_H_e(H_e,q,p)
+    use system
+    implicit none
+    real(kind=8)::q(N)
+    real(kind=8)::p(N)
+    real(kind=8)::H_e(N)
+    integer i
+    do i=2,N
+        H_e(i)=0.5*p(i)**2d0+0.5*(q(i)-q(i-1))**2d0+0.25*(q(i)-q(i-1))**4d0
+    end do
+    H_e(1)=0.5*p(1)**2d0+0.5*(q(1)-q(N))**2d0+0.25*(q(1)-q(N))**4d0
+    end subroutine Func_H_e
+    
+    !!!计算总哈密顿量
+    subroutine Func_H_to(q,p,Ham_to)
+    use system
+    implicit none
+    real(kind=8)::q(N)
+    real(kind=8)::p(N)
+    real(kind=8)::Ham_to
+    real(kind=8)::H_e(N)
+    integer i
+    call Func_H_e(H_e,q,p)
+    do i=1,N
+        Ham_to=Ham_to+H_e(i)  !!!! 运动方程！！！
+    end do
+end subroutine Func_H_to
