@@ -7,3 +7,5 @@
 Thermal Transportation in Low Dimensional Nonlinear Lattice System
 
 In this project, we investigated the anomalous energy transport behavior in different lattice systems, such as harmonic lattice, FPU-beta lattice, phi^4 lattice, couple rotator and Toda lattice. We use energy transport method to calculate the thermal conductivity in different type of lattice systems with periodic boundary condition. And we use equilibrium method to get the probability distribution function of energy carriers and then deduce the thermal conductibvity of lattice system using the mean square displacement. The errors are reduced using the high order symplectic algorithm. We also investigated the impact of temperature on the energy-momentum functions of different lattices.
+
+For details, see [PDF](http://baoduge.com/My/Graduate%20Project_Research%20on%20Thermal%20Transport%20in%20Low%20Dimensional%20Nonlinear%20Lattice%20System.pdf).
